@@ -4,8 +4,7 @@
 // <MAKEFUN_OUTPUT_DIR or /output>/entry.txt (UTF-8, no trailing newline).
 // Deterministic: the same bytes on every run. Stdlib only, no network.
 
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const JOKE =
@@ -23,14 +22,25 @@ function main(): void {
 
   const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
   mkdirSync(outDir, { recursive: true });
-  const tmp = mkdtempSync(join(tmpdir(), "office-joke-"));
+  // Temp file MUST live in the output directory itself: the grader mounts
+  // /tmp as a tmpfs separate from /output, so a temp file in os.tmpdir()
+  // cannot be renamed onto /output (EXDEV: cross-device link not
+  // permitted) and the run exits 1. Same-directory temp keeps the rename
+  // on one filesystem; the EXDEV copy fallback covers odd mount layouts.
+  const tmpFile = join(outDir, `.entry-${process.pid}.tmp`);
   try {
-    const tmpFile = join(tmp, "entry.txt");
     writeFileSync(tmpFile, JOKE, "utf8");
     chmodSync(tmpFile, 0o644);
-    renameSync(tmpFile, join(outDir, "entry.txt"));
+    try {
+      renameSync(tmpFile, join(outDir, "entry.txt"));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EXDEV") throw err;
+      copyFileSync(tmpFile, join(outDir, "entry.txt"));
+      chmodSync(join(outDir, "entry.txt"), 0o644);
+      unlinkSync(tmpFile);
+    }
   } finally {
-    rmSync(tmp, { recursive: true, force: true });
+    rmSync(tmpFile, { force: true });
   }
 
   // Verify the finished file: exact bytes, single line, world-readable.
